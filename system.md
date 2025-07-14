@@ -9,6 +9,10 @@ MCP for all tool definitions
 A2A to communicate between conscious agent and other agents
 Mem0 for memory management
 Qdrant for vector DB
+uv for python package management
+npm for frontend package management
+Docker, docker compose, and makefile for application packaging
+LangSmith for observability of agent traces
 
 # Mechanics of Stream of Consciousness
 ## System Prompt
@@ -45,21 +49,29 @@ For the conscious agent to evolve over time, it needs a hard-coded seed action t
 3. Send message to queue
 4. Inspect error and retry
 5. Emit message to external
+6. Self reflection
 
 ## Conscious Agent Loop
 Trigger a train of thought every time a message enters the queue. These will be massively parallel and deeply recursive. Not exactly "stream of consciousness."
 
 It will not be a single agent trace that runs forever in a cycle; instead, a single agent trace will run for each message received in the queue.
 
-## Master Graph
-### Nodes
-Observer
-Delegator
+## Graphs
+### Master Graph
+#### Nodes
+Observer (single LLM call)
+Delegator (graph)
 
-### Edges
+#### Edges
 Start to Observer
-Observer to Delegator
+Observer to Delegator - conditional edge if Observer classifies message as actionable
 Delegator to End
+
+### Delegator Graph
+#### Nodes
+Retrieve subagents
+Select subagents
+Trigger subagents
 
 # User Interface
 A user can send messages into the queue of the conscious agent through a simple web interface. The conscious agent can emit messages back to the web interface.
@@ -71,6 +83,8 @@ The conscious agent will always write files to the path `~/.james`.
 ## Memory
 The conscious agent will decide for itself what memory structure to implement. It will ask the user to set up any required cloud infrastructure or API keys. 
 
-# Sandboxing
+## Sandboxing
 The conscious agent needs the ability to run arbitray terminal commands and to write code for itself that can be executed later. These actions need to be implemented in a secure way that does not put the local machine's data and settings at risk.
 
+## Subagent Registry
+Each subagent should adhere to the A2A protocol. Their metadata, including descriptions, data contracts (input, output format), import path info, and embedding vector, should be stored in a local CSV that will be used for retrieval.
