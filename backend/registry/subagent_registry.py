@@ -311,6 +311,30 @@ class SubagentRegistry:
         
         return subagents
     
+    def list_all(self) -> list:
+        """
+        Synchronous method to list all subagents as dicts (for legacy compatibility).
+        Returns:
+            List of dicts representing subagents.
+        """
+        subagents = []
+        try:
+            with open(self.registry_path, 'r', newline='', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    try:
+                        # Skip empty rows or rows with missing data
+                        if not row or not row.get("id"):
+                            continue
+                        subagents.append(row)
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            return []
+        except Exception as e:
+            raise SubagentRegistryError(f"Failed to list subagents: {e}")
+        return subagents
+    
     async def update_subagent(self, subagent: Subagent) -> None:
         """
         Update an existing subagent in the registry.

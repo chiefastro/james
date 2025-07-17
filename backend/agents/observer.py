@@ -14,6 +14,8 @@ from enum import Enum
 
 from ..models.core import Message, MessageClassification, MessageSource
 from ..queue.message_queue import MessageQueue
+from ..observability.langsmith_tracer import trace_observer_operation, get_tracer
+from ..observability.metrics_collector import get_metrics_collector
 
 
 logger = logging.getLogger(__name__)
@@ -329,6 +331,29 @@ class ObserverAgent:
         Returns:
             ClassificationResult with the classification decision
         """
+        # Get tracer and metrics collector
+        tracer = get_tracer()
+        metrics = get_metrics_collector()
+        
+        # Start timing for metrics
+        start_time = datetime.now(timezone.utc)
+        timer_id = metrics.start_timer("message_processing_time_ms")
+        
+        # Start trace
+        trace_id = await tracer.start_trace(
+            operation_name="process_message",
+            agent_type="Observer",
+            inputs={
+                "message_id": message.id,
+                "message_source": message.source.value,
+                "message_length": len(message.content)
+            },
+            metadata={
+                "message_priority": message.priority,
+                "message_timestamp": message.timestamp.isoformat()
+            }
+        )
+        
         try:
             # Classify the message
             result = self.classifier.classify_message(message)
@@ -345,7 +370,12 @@ class ObserverAgent:
                 "classification_confidence": result.confidence,
                 "classification_explanation": result.explanation,
                 "classified_at": datetime.now(timezone.utc).isoformat(),
-                "observer_metadata": result.metadata
+                "observer_metadata": result.metadata,
+                "classification": {
+                    "type": result.classification.value,
+                    "confidence": result.confidence,
+                    "reason": result.reason.value if result.reason else None
+                }
             })
             
             # Route the message based on classification
@@ -355,6 +385,30 @@ class ObserverAgent:
             self._processed_count += 1
             self._classification_stats[result.classification] += 1
             
+            # Record metrics
+            processing_time = metrics.stop_timer("message_processing_time_ms", timer_id)
+            metrics.record_classification_result(
+                accuracy=1.0,  # Assume accuracy for now - would be calculated based on feedback
+                confidence=result.confidence,
+                classification_type=result.classification.value
+            )
+            
+            # End trace successfully
+            await tracer.end_trace(
+                trace_id=trace_id,
+                outputs={
+                    "classification": result.classification.value,
+                    "priority": result.priority,
+                    "confidence": result.confidence,
+                    "processing_time_ms": processing_time
+                },
+                success=True,
+                additional_metadata={
+                    "classification_reason": result.reason.value if result.reason else None,
+                    "routed_successfully": True
+                }
+            )
+            
             logger.info(
                 f"Processed message {message.id}: {result.classification.value} "
                 f"(priority={result.priority}, confidence={result.confidence:.2f})"
@@ -363,7 +417,18 @@ class ObserverAgent:
             return result
             
         except Exception as e:
+            # Record error metrics
+            metrics.record_error("classification_error", "Observer", "error")
+            
+            # End trace with error
+            await tracer.end_trace(
+                trace_id=trace_id,
+                error=str(e),
+                success=False
+            )
+            
             logger.error(f"Error processing message {message.id}: {e}")
+            
             # On error, default to safe handling
             error_result = ClassificationResult(
                 classification=MessageClassification.ACT_NOW,

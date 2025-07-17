@@ -142,3 +142,24 @@ class HealthResponse(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Check timestamp")
     version: str = Field(description="API version")
     components: Dict[str, str] = Field(description="Component health status")
+
+
+class AgentCreationRequest(BaseModel):
+    """Request model for creating new agent instances."""
+    agent_type: str = Field(..., description="Type of agent to create (observer, delegator, etc.)")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Agent configuration")
+    
+    @field_validator('agent_type')
+    @classmethod
+    def validate_agent_type(cls, v: str) -> str:
+        valid_types = ["observer", "delegator"]
+        if v not in valid_types:
+            raise ValueError(f"Agent type must be one of: {', '.join(valid_types)}")
+        return v
+
+
+class AgentCreationResponse(BaseModel):
+    """Response model for agent creation."""
+    agent_id: str = Field(..., description="Unique ID of the created agent")
+    agent_type: str = Field(..., description="Type of agent created")
+    status: str = Field(..., description="Status of agent creation")

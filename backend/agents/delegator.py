@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from ..models.core import Subagent, Task, TaskStatus, Message
 from ..registry.subagent_registry import SubagentRegistry, SubagentRegistryError
 from ..vector.qdrant_client import QdrantVectorClient, QdrantVectorError
+from ..observability.langsmith_tracer import trace_delegator_operation, get_tracer
+from ..observability.metrics_collector import get_metrics_collector
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +476,31 @@ class Delegator:
         Returns:
             DelegationResult with selected subagents and delegation status
         """
+        # Get tracer and metrics collector
+        tracer = get_tracer()
+        metrics = get_metrics_collector()
+        
+        # Start timing for metrics
+        timer_id = metrics.start_timer("delegation_time_ms")
+        
+        # Start trace
+        trace_id = await tracer.start_trace(
+            operation_name="delegate",
+            agent_type="Delegator",
+            inputs={
+                "task_id": request.task.id,
+                "task_description": request.task.description[:100],
+                "max_subagents": request.max_subagents,
+                "similarity_threshold": request.similarity_threshold,
+                "required_capabilities": request.require_capabilities
+            },
+            metadata={
+                "task_priority": request.task.priority,
+                "message_id": request.message.id,
+                "delegator_id": self.agent_id
+            }
+        )
+        
         result = DelegationResult(task_id=request.task.id)
         
         try:
@@ -483,6 +510,27 @@ class Delegator:
             if not candidates:
                 result.selection_reasoning = "No suitable subagents found for the task"
                 result.success = True  # Not an error, just no delegation needed
+                
+                # Record metrics for no delegation
+                delegation_time = metrics.stop_timer("delegation_time_ms", timer_id)
+                metrics.record_delegation_result(
+                    success=True,
+                    subagents_selected=0,
+                    selection_quality=0.0
+                )
+                
+                # End trace
+                await tracer.end_trace(
+                    trace_id=trace_id,
+                    outputs={
+                        "candidates_found": 0,
+                        "subagents_selected": 0,
+                        "delegation_time_ms": delegation_time
+                    },
+                    success=True,
+                    additional_metadata={"no_candidates_reason": "No suitable subagents found"}
+                )
+                
                 return result
             
             # Step 2: Select appropriate subagents
@@ -498,6 +546,27 @@ class Delegator:
             
             if not selected_subagents:
                 result.success = True  # Not an error, just no suitable subagents
+                
+                # Record metrics for no selection
+                delegation_time = metrics.stop_timer("delegation_time_ms", timer_id)
+                metrics.record_delegation_result(
+                    success=True,
+                    subagents_selected=0,
+                    selection_quality=0.0
+                )
+                
+                # End trace
+                await tracer.end_trace(
+                    trace_id=trace_id,
+                    outputs={
+                        "candidates_found": len(candidates),
+                        "subagents_selected": 0,
+                        "delegation_time_ms": delegation_time
+                    },
+                    success=True,
+                    additional_metadata={"no_selection_reason": "No subagents met selection criteria"}
+                )
+                
                 return result
             
             # Step 3: Delegate tasks to selected subagents
@@ -513,11 +582,55 @@ class Delegator:
             # Step 4: Update subagent usage tracking
             await self._update_subagent_usage(selected_subagents)
             
+            # Calculate selection quality based on average similarity scores
+            avg_similarity = sum(score for _, score in candidates[:len(selected_subagents)]) / len(selected_subagents)
+            
+            # Record metrics for successful delegation
+            delegation_time = metrics.stop_timer("delegation_time_ms", timer_id)
+            metrics.record_delegation_result(
+                success=True,
+                subagents_selected=len(selected_subagents),
+                selection_quality=avg_similarity
+            )
+            
+            # End trace successfully
+            await tracer.end_trace(
+                trace_id=trace_id,
+                outputs={
+                    "candidates_found": len(candidates),
+                    "subagents_selected": len(selected_subagents),
+                    "delegation_messages_sent": len(delegation_messages),
+                    "delegation_time_ms": delegation_time,
+                    "avg_selection_quality": avg_similarity
+                },
+                success=True,
+                additional_metadata={
+                    "selected_subagent_ids": [sa.id for sa in selected_subagents],
+                    "selection_reasoning": reasoning
+                }
+            )
+            
             logger.info(f"Successfully delegated task {request.task.id} to {len(selected_subagents)} subagents")
             
         except Exception as e:
             result.error_message = str(e)
             result.success = False
+            
+            # Record error metrics
+            metrics.record_error("delegation_error", "Delegator", "error")
+            metrics.record_delegation_result(
+                success=False,
+                subagents_selected=0,
+                selection_quality=0.0
+            )
+            
+            # End trace with error
+            await tracer.end_trace(
+                trace_id=trace_id,
+                error=str(e),
+                success=False
+            )
+            
             logger.error(f"Delegation failed for task {request.task.id}: {e}")
         
         return result

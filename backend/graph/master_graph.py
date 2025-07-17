@@ -20,6 +20,8 @@ from ..agents.observer import ObserverAgent, ClassificationResult
 from ..agents.delegator import Delegator, DelegationRequest
 from ..queue.message_queue import MessageQueue
 from ..registry.subagent_registry import SubagentRegistry
+from ..observability.langsmith_tracer import trace_master_graph_operation, get_tracer
+from ..observability.metrics_collector import get_metrics_collector
 
 logger = logging.getLogger(__name__)
 
